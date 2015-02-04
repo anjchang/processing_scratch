@@ -1,0 +1,309 @@
+//For HHTF project, scrollbars working and inputs okay
+import processing.serial.*; 
+Serial port;
+String input = "";
+String output = "";
+int maxCount=20; //number times to wait before pwm is sent again
+int waitCount=10;  //waitcount after PWM send
+int myTimer;
+int lf = 10; // ASCII linefeed
+Button heaterButton, simButton;
+HScrollbar referenceTemp, currentTemp;
+PFont f;
+float curTemp, refTemp, comfort, refTemp_y, curTemp_y;
+int refTempText_y, curTempText_y, comfortHi, comfortLo;
+int[] curTempVals;
+color heaterButtonColor, heaterButtonHighlight, heaterButtonOnColor;
+color simButtonColor, simButtonHighlight, simButtonOnColor;
+color baseColor, currentColor;
+int buttonSize, heaterButtonX, heaterButtonY, simButtonX, simButtonY;
+boolean rectOver = false;
+boolean heaterOn, simOn;
+boolean portAvailable=true;  //debugging
+int adcmin, adcmax, adcVal; //adc attached to channel4
+String adctext ="";
+
+void setup() {
+
+  frameRate(1);
+  if (portAvailable) {
+    println(Serial.list()); 
+    port = new Serial(this, Serial.list()[7], 9600);
+    // Fire a serialEvent() when when a linefeed comes in to the serial port.
+    port.bufferUntil(lf);
+    port.write(lf);
+  }
+  background(255);
+  size(640, 480);
+  f = createFont("Arial", 12, true);
+  textFont(f, 14);
+  fill(0);
+
+
+
+  myTimer=0;
+  buttonSize =20;
+  heaterButtonX = 10;
+  heaterButtonY = 390;
+  simButtonX = 10;
+  simButtonY = 360;
+
+  comfort = 20;  //range of comfort
+  baseColor = color(102);  //heaterOff
+  currentColor = baseColor;
+  curTempVals = new int[width];
+
+  referenceTemp = new HScrollbar(0, 440, 200, 16, 16);
+  currentTemp = new HScrollbar(0, 460, 200, 16, 16);
+
+  heaterButtonColor = color(255, 40, 40);   //off 
+  heaterButtonHighlight = color(180);  //over 220
+  heaterButtonOnColor=color(80, 0, 0); //on
+  simButtonColor = color(102);
+  simButtonHighlight =color(200);
+  simButtonOnColor=color(80, 0, 0);
+
+  heaterButton = new Button(heaterButtonX, heaterButtonY, buttonSize, buttonSize, heaterButtonColor, heaterButtonHighlight, heaterButtonOnColor);
+  simButton = new Button(simButtonX, simButtonY, buttonSize, buttonSize, simButtonColor, simButtonHighlight, simButtonOnColor);
+
+  referenceTemp.setPos(150);  //02
+  currentTemp.setPos(40);
+  heaterOn=false;
+  simOn=true;
+
+  refTemp = map(referenceTemp.getPos(), 0, 200, -25, 85);
+  curTemp = map(currentTemp.getPos(), 0, 200, -25, 85);
+
+  comfortHi = int(refTemp+comfort/2);
+  comfortLo = int(refTemp-comfort/2);
+  //these values are calbirated from 
+  //adc channel 4 (a pot)
+  adcmin=0;
+  adcmax=2497;
+  /*  print("refTemp: "+ refTemp);
+   print(" comfHi: "+ comfortHi);
+   print(" comfLo: "+ comfortLo);
+   */
+}
+
+void draw() {
+  /*  print("refTemp: "+ refTemp);
+   print(" comfortHi: "+ comfortHi);
+   print(" comfortLo: "+ comfortLo);
+   println(" xx: "+ comfort*referenceTemp.getRatio());
+   */
+  background(255);
+  heaterButton.update(mouseX, mouseY);
+  heaterButton.display();  //check if person wants heaterOn
+  simButton.update(mouseX, mouseY);
+  simButton.display();
+  fill(204, 102, 0);
+  text("Press a button below    OR ", heaterButtonX, 340);
+  if (simOn) {
+    text("Heater On: "+ heaterOn, heaterButtonX + buttonSize +5, heaterButtonY+buttonSize/3);
+  } 
+  text("Simulation On: "+ simOn, simButtonX + buttonSize +5, simButtonY+buttonSize/3);
+  refTemp = map(referenceTemp.getPos(), 0, 200, -25, 85);
+  refTemp_y =map(refTemp, -25, 85, 300, 16);
+
+  if (simOn) {  //get temperatures from UI
+    //temperatures go from 0 to 100
+    curTemp = map(currentTemp.getPos(), 0, 200, -25, 85);
+    //300 y bottom edge
+  } else {  //get temp the MSP430
+    println("adc loop");
+    // println(input.indexOf(","));  // println(input.indexOf("mV"));
+    output="adc 4 2";
+    if (myTimer==0) {
+      sendString(output);
+      println("send adc query "+myTimer+" reply: "+input);
+      if (input.indexOf("mV")>0) {
+         println("mV in the reply");
+        adctext="";
+        if (input.indexOf(",")>1 && input.indexOf("mV")>1) {
+
+          //grab valid response from MSP430 
+          adctext=input.substring(input.indexOf(",")+1, input.indexOf("mV"));
+          println("value "+adctext);
+          adcVal= Integer.parseInt(adctext.trim());
+          curTemp=map(int(adcVal), adcmin, adcmax, -25, 85);
+          currentTemp.setPos(2*curTemp*currentTemp.getRatio());
+        }
+        output="";
+        input="";
+      }
+    }
+  }
+
+
+  curTemp_y =map(curTemp, -25, 85, 300, 16);
+
+  comfortHi = int(refTemp+comfort/2);
+  comfortLo = int(refTemp-comfort/2);
+
+  if (simOn) {
+    if (heaterOn) {
+      if (curTemp <= comfortHi) {  //not too hot
+        heatUp();
+      } else {
+        heaterOn = false;
+        heaterButton.setState(false); //too hot 
+        //  println("heater shuts itself off");
+      }
+    } else if (curTemp <= comfortLo) {
+      heatUp();  //too cold
+      heaterOn=true;
+    }
+  } else {
+    //talk to msp
+    if ( curTemp <=comfortHi && curTemp >=comfortLo) { //colder than upper comfort range
+      output="pwm 10 5";  //moderate heat
+    } else if (curTemp > comfortHi) {  //hotter than comfortable
+      output="pwm 0 0";
+    } else { //too cold    
+      output="pwm 20 99";
+    }
+    print(myTimer +" ");//wait to send pwm
+    if (myTimer==waitCount) {   //check if its time to talk
+      println(output);
+      sendString(output);
+      println(input);
+      input="";
+    }
+    myTimer++;
+    if (myTimer>=maxCount) myTimer=0;
+  } 
+  //update scrollbars
+  referenceTemp.update();
+  referenceTemp.display();
+  currentTemp.update();
+  currentTemp.display();
+
+  //the data to plot
+  for (int i = 1; i < width; i++) { 
+    curTempVals[i-1] = curTempVals[i];
+  }  
+  curTempVals[width-1]=int(curTemp_y);
+
+  fill(220);
+  noStroke();
+
+  // draw "comfort zone"
+  rect(0, int(refTemp_y-comfort), width, comfort*referenceTemp.getRatio());
+  rect(0, int(refTemp_y), width, comfort*referenceTemp.getRatio());
+  stroke(10);
+  line(0, refTemp_y, width, refTemp_y);
+  fill(255, 0, 0);
+
+  //draw the scope trace of current values
+  for (int i=1; i<width; i++) {
+    stroke(0);
+    point(i, curTempVals[i]);
+  }
+  //update text and horizontal lines
+  text(refTemp, 0, refTemp_y);
+  text(curTemp, 0, curTemp_y);
+  text("-25 C ", 0, 300);
+  text("85 C ", 0, 20);
+  text("refTemp "+refTemp, 220, 440);
+  text("currentTemp "+curTemp, 220, 460);
+
+  if (simOn) {
+    coolDownSimulation();
+  }
+
+  //typing | serial UART communication interface
+  fill(204, 102, 0);
+
+  text("Type a line of text and press Enter to send to the serial port:", 200, 340);
+  rect(200, 360, 480, 5);
+  text(output, 200, 355);
+  text(input, 370, 380);
+
+  if (simOn) {
+    text("Drag sliders to change simulation", heaterButtonX, 420);
+  } else { 
+    text("Turn potentiometer on port 1.4 to adjust currentTemp ", heaterButtonX, 420);
+  }
+}
+
+
+void mousePressed() {
+
+  if (heaterButton.overRect(heaterButtonX, heaterButtonY, buttonSize, buttonSize)) {
+    heaterButton.setState(!heaterOn);
+    heaterOn=!heaterOn;
+  }
+  if (simButton.overRect(simButtonX, simButtonY, buttonSize, buttonSize)) {
+    simButton.setState(!simOn);
+    simOn=!simOn;
+    if (simOn==false) {
+      //DEBUG
+      output="adc 4 2";
+      sendString(output);
+
+      println("send "+output);
+      println("got "+input);
+
+      output="pwm 0 0";
+      sendString(output);
+
+      println("send "+output);
+
+      println("got "+input);
+      input="";
+
+      myTimer=0;
+    }
+  }
+  //print("heaterOn:"+heaterOn);
+  /*  print("  btnstate:"+heaterButton.getState());
+   print(" simOn:"+simOn);
+   println(" btnState: "+simButton.getState());*/
+}
+
+void heatUp() {
+  currentTemp.setPos(currentTemp.getPos()+1);
+}
+void coolDownSimulation() {
+  //simulate the cooling down from outside temp // println("cd: "+currentTemp.getspos());
+  currentTemp.setPos((currentTemp.getPos()/currentTemp.getRatio())-2);
+}
+
+///// serial stuff
+// Buffer a string until a linefeed is encountered then send it to the serial port.
+void keyPressed() {
+  if (key < 255) {
+    output += str(key);
+    if (key == lf) {
+      //output+='\n';
+      if (output.indexOf("adc")==0) { //added to adc output to avoid streaming
+        print("-------------------adc query sent:");
+        output += " 2";
+        println(output);
+      }
+      //      if (output.indexOf("ctrlc")==0) {
+      //        port.write(0x03);
+      //        port.write(0x10);
+      //      }
+      //      //     output=sendString(output);
+      sendString(output);
+      output="";  //clear output
+    }
+  }
+}
+
+void sendString(String myString) {
+  port.write(myString);
+  port.write(0x0d);  //send newline
+  //  port.write("\r\n") ;
+  myString = "";
+  //  output=myString;
+}
+// Process a line of text from the serial port.
+void serialEvent(Serial p) {
+  //while (p.available ()>0) {
+  input += p.readStringUntil('\n');
+  //}
+  println("received: " + input);
+}
