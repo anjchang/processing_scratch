@@ -1,4 +1,4 @@
-//For HHTF project, scrollbars working and inputs okay
+// scrollbars working and inputs okay
 import processing.serial.*; 
 Serial port;
 String input = "";
